@@ -1,0 +1,22 @@
+{
+  "name": "متابع حافز ثرايف",
+  "short_name": "حافز ثرايف",
+  "lang": "ar",
+  "dir": "rtl",
+  "display": "standalone",
+  "start_url": "./index.html",
+  "background_color": "#05060a",
+  "theme_color": "#05060a",
+  "icons": [
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-196.png",
+      "sizes": "196x196",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,875 +1,732 @@
-// ============ State & Storage ============
-const STORAGE_KEY = 'thrivve-tracker-v3-state';
 
-let state = {
-  rules: {
-    minHours: 25,
-    minTrips: 35,
-    minPeakTripsPercent: 70,
-    incentivePerTrip: 3
-  },
-  stats: {
-    acceptance: null,
-    cancel: null
-  },
-  rides: []
-};
+/* تخزين وإدارة الحالة */
+
+const STORAGE_KEY = "thrivve-tracker-v4";
+
+function getMonday(d) {
+  const date = new Date(d);
+  const day = date.getDay(); // 0-6, 0 = Sun
+  const diff = (day === 0 ? -6 : 1) - day; // إلى الإثنين
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function formatDateRangeForWeek(start) {
+  const startDate = new Date(start);
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + 6);
+
+  const opts = { day: "2-digit", month: "2-digit" };
+  const fmt = new Intl.DateTimeFormat("ar-SA", opts);
+  return `من ${fmt.format(startDate)} حتى ${fmt.format(endDate)} (حسب جهازك)`;
+}
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed.rules) state.rules = parsed.rules;
-    if (parsed.stats) state.stats = parsed.stats;
-    if (Array.isArray(parsed.rides)) state.rides = parsed.rides;
-  } catch (e) {
-    console.error('Failed to load state', e);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
 }
 
-function saveState() {
+function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-// ============ Helpers ============
-function formatDateTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString('ar-SA', {
-    year: '2-digit',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true
-  });
+function createEmptyWeek(startDate) {
+  return {
+    weekStartISO: startDate.toISOString(),
+    trips: [],
+    settings: {
+      minHours: 25,
+      baseMinRides: 35,
+      minPeakPercent: 70,
+      bonusPerRide: 3,
+      acceptRate: 93,
+      cancelRate: 0,
+      acceptThreshold: 65,
+      cancelThreshold: 10
+    },
+    wallet: {
+      cashInHand: 0,
+      walletBalance: 0,
+      cashOnlyTotal: 0,
+      cardOnlyTotal: 0,
+      mixedCashTotal: 0,
+      mixedCardTotal: 0
+    },
+    ui: {
+      lastActiveScreen: "home",
+      hasShownWeekResetToast: false
+    }
+  };
 }
 
-// تعريف أوقات الذروة حسب كلام ثرايف
-function isPeak(date) {
-  const d = new Date(date);
-  const day = d.getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-  const h = d.getHours();
-  const m = d.getMinutes();
-  const hm = h * 60 + m;
+/* حالة التطبيق في الذاكرة */
+let state = null;
+let currentTripStart = null;
+let peakOverrideMode = "auto";
 
-  // Sun-Wed: 06:00 - 19:00
-  if (day >= 0 && day <= 3) {
-    if (hm >= 6 * 60 && hm < 19 * 60) return true;
+/* عناصر DOM */
+const screens = document.querySelectorAll(".screen");
+const navItems = document.querySelectorAll(".nav-item");
+const weekRangeEl = document.getElementById("week-range");
+const heroBonusAmountEl = document.getElementById("hero-bonus-amount");
+const totalIncomeEl = document.getElementById("total-income");
+const incomeIncreaseEl = document.getElementById("income-increase");
+const totalRidesEl = document.getElementById("total-rides");
+const totalHoursEl = document.getElementById("total-hours");
+const hoursWorkedEl = document.getElementById("hours-worked");
+const minHoursEl = document.getElementById("min-hours");
+const ridesDoneEl = document.getElementById("rides-done");
+const ridesRequiredEl = document.getElementById("rides-required");
+const ridesEscalationEl = document.getElementById("rides-escalation");
+const peakPercentEl = document.getElementById("peak-percent");
+const minPeakEl = document.getElementById("min-peak");
+const acceptRateEl = document.getElementById("accept-rate");
+const cancelRateEl = document.getElementById("cancel-rate");
+const rulesChecklistEl = document.getElementById("rules-checklist");
+const cashInHandEl = document.getElementById("cash-in-hand");
+const walletBalanceEl = document.getElementById("wallet-balance");
+const walletHeroEl = document.getElementById("wallet-hero");
+
+const cashOnlyTotalEl = document.getElementById("cash-only-total");
+const cardOnlyTotalEl = document.getElementById("card-only-total");
+const mixedCashTotalEl = document.getElementById("mixed-cash-total");
+const mixedCardTotalEl = document.getElementById("mixed-card-total");
+
+const ridesTbody = document.getElementById("rides-tbody");
+const statusPill = document.getElementById("status-pill");
+const statusLabel = document.getElementById("status-label");
+const newWeekBtn = document.getElementById("new-week-btn");
+
+const startTripBtn = document.getElementById("start-trip-btn");
+const endTripBtn = document.getElementById("end-trip-btn");
+const currentTripLabel = document.getElementById("current-trip-label");
+
+const showReportBtn = document.getElementById("show-report-btn");
+const exportJsonBtn = document.getElementById("export-json-btn");
+
+const settingsForm = document.getElementById("settings-form");
+const minHoursInput = document.getElementById("minHoursInput");
+const baseRidesInput = document.getElementById("baseRidesInput");
+const minPeakInput = document.getElementById("minPeakInput");
+const bonusPerRideInput = document.getElementById("bonusPerRideInput");
+const acceptRateInput = document.getElementById("acceptRateInput");
+const cancelRateInput = document.getElementById("cancelRateInput");
+const resetWeekBtn = document.getElementById("reset-week-btn");
+
+const endTripModal = document.getElementById("end-trip-modal");
+const fareInput = document.getElementById("fareInput");
+const cashPartInput = document.getElementById("cashPartInput");
+const payChips = document.querySelectorAll(".chip[data-pay]");
+const peakChips = document.querySelectorAll(".chip[data-peak]");
+const overridePeakCheckbox = document.getElementById("overridePeak");
+const saveTripBtn = document.getElementById("save-trip-btn");
+const cancelTripBtn = document.getElementById("cancel-trip-btn");
+
+const reportScreen = document.querySelector('[data-screen="report"]');
+const reportContentEl = document.getElementById("report-content");
+const printReportBtn = document.getElementById("print-report-btn");
+
+const toastEl = document.getElementById("toast");
+
+const infoModal = document.getElementById("info-modal");
+const infoModalTitle = document.getElementById("info-modal-title");
+const infoModalText = document.getElementById("info-modal-text");
+const infoCloseBtn = document.getElementById("info-close-btn");
+const infoTriggers = document.querySelectorAll("[data-open-info]");
+
+/* أدوات مساعدة */
+
+function showToast(message) {
+  toastEl.textContent = message;
+  toastEl.classList.remove("hidden");
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => {
+    toastEl.classList.add("hidden");
+  }, 2600);
+}
+
+function changeScreen(target) {
+  screens.forEach((s) => {
+    s.classList.toggle("screen-active", s.dataset.screen === target);
+  });
+  navItems.forEach((btn) => {
+    btn.classList.toggle("nav-active", btn.dataset.target === target);
+  });
+  state.ui.lastActiveScreen = target;
+  saveState(state);
+}
+
+function formatTimeHM(date) {
+  const d = new Date(date);
+  const opts = { hour: "2-digit", minute: "2-digit", hour12: true };
+  return new Intl.DateTimeFormat("ar-SA", opts).format(d);
+}
+
+function formatDateTimeShort(date) {
+  const d = new Date(date);
+  const opts = { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: true };
+  return new Intl.DateTimeFormat("ar-SA", opts).format(d);
+}
+
+function round2(num) {
+  return Math.round((num + Number.EPSILON) * 100) / 100;
+}
+
+function isWithinPeakAutomatic(date) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0 Sun
+  const minutes = d.getHours() * 60 + d.getMinutes();
+
+  function between(m, start, end) {
+    if (end < start) {
+      return m >= start || m < end;
+    }
+    return m >= start && m < end;
   }
 
-  // Thu: 06:00 - 24:00 + Fri 00:00 - 01:00
-  if (day === 4 && hm >= 6 * 60) return true; // Thu 06:00 -> midnight
-  if (day === 5 && hm < 60) return true;      // Fri 00:00 - 01:00
-
-  // Fri-Sat: 18:00 - 24:00 + next day 00:00 - 01:00
-  if (day === 5 && hm >= 18 * 60) return true; // Fri evening
-  if (day === 6 && hm < 60) return true;       // Sat 00:00 - 01:00
-  if (day === 6 && hm >= 18 * 60) return true; // Sat evening
-  if (day === 0 && hm < 60) return true;       // Sun 00:00 - 01:00
-
+  if (day >= 1 && day <= 3) {
+    return between(minutes, 6 * 60, 19 * 60);
+  }
+  if (day === 4) {
+    return between(minutes, 6 * 60, 25 * 60); // 1am next day
+  }
+  if (day === 5 || day === 6) {
+    return between(minutes, 18 * 60, 25 * 60);
+  }
   return false;
 }
 
-function getWeekInfoText() {
-  const now = new Date();
-  const day = now.getDay(); // 0=Sun .. 6=Sat
-  // Monday as start: 1 = Monday, 0=Sun
-  const diffToMonday = (day === 0 ? -6 : 1 - day);
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diffToMonday);
-  monday.setHours(0, 0, 0, 0);
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
-  const fmt = (d) =>
-    d.toLocaleDateString('ar-SA', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  return `الأسبوع الحالي (حسب جهازك): من الإثنين ${fmt(monday)} حتى الأحد ${fmt(sunday)}.`;
+/* حساب الإحصائيات */
+
+function computeStats() {
+  const trips = state.trips || [];
+  let totalIncome = 0;
+  let totalSeconds = 0;
+  let peakTrips = 0;
+
+  // محفظة
+  let cashOnlyTotal = 0;
+  let cardOnlyTotal = 0;
+  let mixedCashTotal = 0;
+  let mixedCardTotal = 0;
+
+  trips.forEach((t) => {
+    totalIncome += t.amount || 0;
+    totalSeconds += t.durationSeconds || 0;
+    if (t.isPeak) peakTrips++;
+
+    if (t.paymentType === "cash") {
+      cashOnlyTotal += t.amount || 0;
+    } else if (t.paymentType === "card") {
+      cardOnlyTotal += t.amount || 0;
+    } else if (t.paymentType === "mixed") {
+      mixedCashTotal += t.cashPart || 0;
+      mixedCardTotal += (t.amount || 0) - (t.cashPart || 0);
+    }
+  });
+
+  const totalHours = totalSeconds / 3600;
+  const totalRides = trips.length;
+  const peakPercent = totalRides ? (peakTrips / totalRides) * 100 : 0;
+
+  const settings = state.settings;
+  const minHours = settings.minHours;
+  const baseMinRides = settings.baseMinRides;
+  const minPeakPercent = settings.minPeakPercent;
+
+  const extraHours = Math.max(0, totalHours - 25);
+  const escalatedRequired = Math.ceil(baseMinRides + extraHours * 1.5);
+  const requiredRides = Math.max(baseMinRides, escalatedRequired);
+
+  const estimatedBonus = totalRides >= requiredRides &&
+    totalHours >= minHours &&
+    peakPercent >= minPeakPercent &&
+    settings.acceptRate >= settings.acceptThreshold &&
+    settings.cancelRate <= settings.cancelThreshold
+      ? totalRides * settings.bonusPerRide
+      : totalRides * settings.bonusPerRide;
+
+  // افتراض: الزيادة = (الحافز التقديري / الدخل الأساسي) * 100
+  const incomeIncrease = totalIncome > 0 ? (estimatedBonus / totalIncome) * 100 : 0;
+
+  // محفظة تقديرية
+  const cashInHand = cashOnlyTotal + mixedCashTotal;
+  const walletBalance = cardOnlyTotal + mixedCardTotal;
+
+  state.wallet = {
+    cashInHand: round2(cashInHand),
+    walletBalance: round2(walletBalance),
+    cashOnlyTotal: round2(cashOnlyTotal),
+    cardOnlyTotal: round2(cardOnlyTotal),
+    mixedCashTotal: round2(mixedCashTotal),
+    mixedCardTotal: round2(mixedCardTotal)
+  };
+
+  return {
+    totalIncome: round2(totalIncome),
+    totalHours,
+    totalRides,
+    peakPercent,
+    requiredRides,
+    minHours,
+    baseMinRides,
+    extraHours,
+    minPeakPercent,
+    estimatedBonus: round2(estimatedBonus),
+    incomeIncrease: round2(incomeIncrease)
+  };
 }
 
-// ============ Dashboard Calculation ============
-function recalcDashboard() {
-  const rides = state.rides
-    .slice()
-    .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
-  const totalTrips = rides.length;
-  const totalSeconds = rides.reduce((s, r) => s + (r.durationSec || 0), 0);
-  const totalHours = totalSeconds / 3600;
-  const totalFare = rides.reduce((s, r) => s + (r.fare || 0), 0);
-  const totalCash = rides.reduce(
-    (s, r) => s + (r.cashPart != null ? r.cashPart : r.payment === 'cash' ? (r.fare || 0) : 0),
-    0
-  );
-  const totalCard = rides.reduce(
-    (s, r) =>
-      s +
-      (r.cardPart != null
-        ? r.cardPart
-        : r.payment === 'card'
-        ? (r.fare || 0)
-        : r.payment === 'cash'
-        ? 0
-        : 0),
-    0
-  );
+function updateDashboard() {
+  const weekStart = new Date(state.weekStartISO);
+  weekRangeEl.textContent = formatDateRangeForWeek(weekStart);
 
-  const minHours = Number(state.rules.minHours) || 0;
-  const minTrips = Number(state.rules.minTrips) || 0;
-  const minPeakPercent = Number(state.rules.minPeakTripsPercent) || 0;
-  const incentivePerTrip = Number(state.rules.incentivePerTrip) || 0;
+  const stats = computeStats();
+  const trips = state.trips || [];
+  const settings = state.settings;
 
-  const acceptance = state.stats.acceptance;
-  const cancel = state.stats.cancel;
+  heroBonusAmountEl.textContent = `${stats.estimatedBonus.toFixed(2)} ر.س`;
+  totalIncomeEl.textContent = stats.totalIncome.toFixed(2);
+  totalRidesEl.textContent = stats.totalRides.toString();
+  totalHoursEl.textContent = stats.totalHours.toFixed(2);
+  hoursWorkedEl.textContent = stats.totalHours.toFixed(2);
+  minHoursEl.textContent = stats.minHours.toString();
+  ridesDoneEl.textContent = stats.totalRides.toString();
+  ridesRequiredEl.textContent = stats.requiredRides.toString();
+  peakPercentEl.textContent = stats.peakPercent.toFixed(1);
+  minPeakEl.textContent = stats.minPeakPercent.toString();
+  incomeIncreaseEl.textContent = stats.incomeIncrease.toFixed(1);
 
-  // Required trips with progressive rule
-  let requiredTrips = minTrips;
-  if (totalHours > minHours) {
-    const extraHours = totalHours - minHours;
-    const extraTrips = Math.ceil(extraHours * 1.5);
-    requiredTrips = minTrips + extraTrips;
+  acceptRateEl.textContent = settings.acceptRate.toString();
+  cancelRateEl.textContent = settings.cancelRate.toString();
+
+  cashInHandEl.textContent = state.wallet.cashInHand.toFixed(2);
+  walletBalanceEl.textContent = state.wallet.walletBalance.toFixed(2);
+
+  walletHeroEl.textContent = (state.wallet.cashInHand + state.wallet.walletBalance).toFixed(2) + " ر.س";
+
+  cashOnlyTotalEl.textContent = state.wallet.cashOnlyTotal.toFixed(2);
+  cardOnlyTotalEl.textContent = state.wallet.cardOnlyTotal.toFixed(2);
+  mixedCashTotalEl.textContent = state.wallet.mixedCashTotal.toFixed(2);
+  mixedCardTotalEl.textContent = state.wallet.mixedCardTotal.toFixed(2);
+
+  if (stats.extraHours > 0) {
+    ridesEscalationEl.textContent =
+      `عملت تقريبًا ${stats.totalHours.toFixed(1)} ساعة، لذلك زادت الرحلات المطلوبة تصاعديًا إلى ${stats.requiredRides} رحلة تقريبًا.`;
+  } else {
+    ridesEscalationEl.textContent =
+      "حتى ٢٥ ساعة، يكفي تحقيق عدد الرحلات الأساسي. بعد ذلك يزيد المطلوب تقريبًا ١٫٥ رحلة لكل ساعة إضافية.";
   }
-  const remainingTrips = Math.max(0, requiredTrips - totalTrips);
 
-  // Peak stats
-  const peakRides = rides.filter((r) => r.isPeak);
-  const peakTripsCount = peakRides.length;
-  const peakTripsPercent = totalTrips > 0 ? (peakTripsCount / totalTrips) * 100 : 0;
-  const peakTimeSeconds = peakRides.reduce((s, r) => s + (r.durationSec || 0), 0);
-  const peakTimePercent = totalSeconds > 0 ? (peakTimeSeconds / totalSeconds) * 100 : 0;
-
-  const totalIncentive = totalTrips * incentivePerTrip;
-  const incomeBoostPercent = totalFare > 0 ? (totalIncentive / totalFare) * 100 : null;
-
-  // ---------- Write to DOM ----------
-  const weekInfoEl = document.getElementById('weekInfo');
-  if (weekInfoEl) weekInfoEl.textContent = getWeekInfoText();
-
-  // Summary cards
-  const totalIncentiveEl = document.getElementById('totalIncentive');
-  const totalFareEl = document.getElementById('totalFare');
-  const incomeBoostEl = document.getElementById('incomeBoost');
-  const summaryTripsEl = document.getElementById('summaryTrips');
-  const summaryHoursEl = document.getElementById('summaryHours');
-  const summaryPeakTripsEl = document.getElementById('summaryPeakTrips');
-  const eligibilityBadge = document.getElementById('eligibilityBadge');
-
-  if (totalIncentiveEl) totalIncentiveEl.textContent = totalIncentive.toFixed(2) + ' ر.س';
-  if (totalFareEl) totalFareEl.textContent = totalFare.toFixed(2) + ' ر.س';
-  if (incomeBoostEl) {
-    if (incomeBoostPercent != null) {
-      incomeBoostEl.textContent = `نسبة الزيادة الفعلية على الدخل حتى الآن: ${incomeBoostPercent.toFixed(
-        1
-      )}٪.`;
-    } else {
-      incomeBoostEl.textContent =
-        'أدخل قيم الرحلات لتحسب نسبة الزيادة على الدخل عند تحقق الحافز.';
+  const conditions = [
+    {
+      ok: stats.totalHours >= stats.minHours,
+      text: `الحد الأدنى للساعات: مطلوب ${stats.minHours} ساعة – محقق حاليًا ${stats.totalHours.toFixed(2)} ساعة.`
+    },
+    {
+      ok: stats.totalRides >= stats.requiredRides,
+      text: `الرحلات: مطلوب تقريبًا ${stats.requiredRides} رحلة – محقق حاليًا ${stats.totalRides}.`
+    },
+    {
+      ok: stats.peakPercent >= stats.minPeakPercent,
+      text: `نسبة رحلات الذروة: مطلوب ${stats.minPeakPercent}% – محقق حاليًا ${stats.peakPercent.toFixed(1)}%.`
+    },
+    {
+      ok: settings.acceptRate >= settings.acceptThreshold,
+      text: `نسبة القبول: مطلوب ≥ ${settings.acceptThreshold}% – حاليًا ${settings.acceptRate}%.`
+    },
+    {
+      ok: settings.cancelRate <= settings.cancelThreshold,
+      text: `نسبة الإلغاء: مطلوب ≤ ${settings.cancelThreshold}% – حاليًا ${settings.cancelRate}%.`
     }
-  }
-  if (summaryTripsEl) summaryTripsEl.textContent = totalTrips.toString();
-  if (summaryHoursEl) summaryHoursEl.textContent = totalHours.toFixed(2);
-  if (summaryPeakTripsEl)
-    summaryPeakTripsEl.textContent =
-      totalTrips > 0 ? peakTripsPercent.toFixed(1) + '%' : '0%';
+  ];
 
-  // Hours & trips
-  const totalHoursEl = document.getElementById('totalHours');
-  const totalTripsEl = document.getElementById('totalTrips');
-  const requiredTripsTextEl = document.getElementById('requiredTripsText');
-  const remainingTripsTextEl = document.getElementById('remainingTripsText');
-  const hoursStatusEl = document.getElementById('hoursStatus');
+  rulesChecklistEl.innerHTML = "";
+  let allOk = true;
+  let anyOk = false;
+  conditions.forEach((c) => {
+    const li = document.createElement("li");
+    li.classList.add(c.ok ? "ok" : "fail");
+    const icon = document.createElement("span");
+    icon.classList.add("check-icon");
+    icon.textContent = c.ok ? "✓" : "×";
+    const text = document.createElement("span");
+    text.textContent = c.text;
+    li.appendChild(icon);
+    li.appendChild(text);
+    rulesChecklistEl.appendChild(li);
+    if (!c.ok) allOk = false;
+    if (c.ok) anyOk = true;
+  });
 
-  if (totalHoursEl) totalHoursEl.textContent = totalHours.toFixed(2);
-  if (totalTripsEl) totalTripsEl.textContent = totalTrips.toString();
-
-  if (requiredTripsTextEl) {
-    if (totalHours > 0) {
-      requiredTripsTextEl.textContent = `الرحلات المطلوبة تقريبًا حسب الشرط: ${requiredTrips} رحلة (معتمد على ${minTrips} أساسية + 1.5 رحلة لكل ساعة فوق ${minHours} ساعة).`;
-    } else {
-      requiredTripsTextEl.textContent = 'سجّل بعض الرحلات لاحتساب الشرط التصاعدي.';
-    }
-  }
-  if (remainingTripsTextEl) {
-    if (totalTrips >= requiredTrips && totalTrips > 0) {
-      remainingTripsTextEl.textContent = '✅ عدد الرحلات الحالي يحقق الشرط التصاعدي تقريبًا.';
-      remainingTripsTextEl.className = 'text-[11px] text-emerald-400';
-    } else if (totalHours > 0) {
-      remainingTripsTextEl.textContent = `تحتاج تقريبًا إلى ${remainingTrips} رحلة إضافية لتحقيق الشرط إذا لم تتغير ساعات العمل.`;
-      remainingTripsTextEl.className = 'text-[11px] text-amber-300';
-    } else {
-      remainingTripsTextEl.textContent = '';
-    }
-  }
-  if (hoursStatusEl) {
-    if (totalHours >= minHours) {
-      hoursStatusEl.textContent = '✅ حققت الحد الأدنى لساعات العمل (تقريبًا).';
-      hoursStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300';
-    } else if (totalHours > 0) {
-      hoursStatusEl.textContent =
-        '⚠ تحت الحد الأدنى للساعات، ما زال بإمكانك زيادة ساعات العمل.';
-      hoursStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300';
-    } else {
-      hoursStatusEl.textContent = 'في انتظار تسجيل رحلات لحساب الساعات.';
-      hoursStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300';
-    }
+  if (allOk && trips.length > 0) {
+    statusPill.className = "status-pill status-ok";
+    statusLabel.textContent = "بحسب بياناتك، يبدو أن جميع الشروط متحققة ✅ (تأكيد الشركة هو الحكم النهائي).";
+  } else if (anyOk && trips.length > 0) {
+    statusPill.className = "status-pill status-pending";
+    statusLabel.textContent = "بعض الشروط تحققت، وما زال بإمكانك تحسين البقية.";
+  } else {
+    statusPill.className = "status-pill status-fail";
+    statusLabel.textContent = "لم تتحقق الشروط حتى الآن، ابدأ بتسجيل رحلاتك أولاً.";
   }
 
-  // Peak & quality
-  const peakTripsRatioEl = document.getElementById('peakTripsRatio');
-  const peakTimeRatioEl = document.getElementById('peakTimeRatio');
-  const peakStatusEl = document.getElementById('peakStatus');
-  const acceptanceDisplay = document.getElementById('acceptanceDisplay');
-  const cancelDisplay = document.getElementById('cancelDisplay');
-  const qualityHint = document.getElementById('qualityHint');
+  // جدول الرحلات
+  ridesTbody.innerHTML = "";
+  const sorted = [...trips].sort((a, b) => new Date(b.start) - new Date(a.start));
+  sorted.forEach((t, idx) => {
+    const tr = document.createElement("tr");
+    const cells = [
+      (sorted.length - idx).toString(),
+      formatDateTimeShort(t.start),
+      formatDateTimeShort(t.end),
+      (t.durationSeconds / 60).toFixed(1),
+      (t.amount || 0).toFixed(2),
+      t.isPeak ? "✓" : "—",
+      t.paymentType === "cash" ? "كاش" : t.paymentType === "card" ? "بطاقة" : "مختلط"
+    ];
+    cells.forEach((c) => {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    });
+    ridesTbody.appendChild(tr);
+  });
 
-  if (peakTripsRatioEl)
-    peakTripsRatioEl.textContent =
-      totalTrips > 0 ? peakTripsPercent.toFixed(1) + '%' : '0%';
-  if (peakTimeRatioEl)
-    peakTimeRatioEl.textContent =
-      totalSeconds > 0 ? peakTimePercent.toFixed(1) + '%' : '0%';
+  // تحديث نموذج الإعدادات
+  minHoursInput.value = settings.minHours;
+  baseRidesInput.value = settings.baseMinRides;
+  minPeakInput.value = settings.minPeakPercent;
+  bonusPerRideInput.value = settings.bonusPerRide;
+  acceptRateInput.value = settings.acceptRate;
+  cancelRateInput.value = settings.cancelRate;
 
-  if (peakStatusEl) {
-    if (totalTrips === 0) {
-      peakStatusEl.textContent = 'في انتظار تسجيل رحلات لحساب الذروة.';
-      peakStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300';
-    } else if (peakTripsPercent >= minPeakPercent) {
-      peakStatusEl.textContent = '✅ نسبة رحلات الذروة تحقق شرط ثرايف (حسب عدد الرحلات).';
-      peakStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300';
-    } else {
-      peakStatusEl.textContent =
-        '⚠ نسبة رحلات الذروة أقل من المطلوب، حاول تركيز العمل في أوقات الذروة.';
-      peakStatusEl.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300';
-    }
-  }
+  buildReport();
+  saveState(state);
+}
 
-  if (acceptanceDisplay) {
-    acceptanceDisplay.textContent =
-      acceptance != null ? acceptance.toFixed(2) + '%' : 'غير مدخل';
-  }
-  if (cancelDisplay) {
-    cancelDisplay.textContent = cancel != null ? cancel.toFixed(2) + '%' : 'غير مدخل';
-  }
-  if (qualityHint) {
-    const parts = [];
-    if (acceptance != null) {
-      if (acceptance >= 65) {
-        parts.push('✅ نسبة القبول أعلى من 65% (شرط متحقق حسب الإدخال).');
-      } else {
-        parts.push('⚠ نسبة القبول أقل من 65% — حاول تقليل رفض الطلبات.');
-      }
-    } else {
-      parts.push('أدخل نسبة القبول الرسمية من تطبيق أوبر/ثرایف.');
-    }
-    if (cancel != null) {
-      if (cancel <= 10) {
-        parts.push('✅ نسبة الإلغاء أقل من 10% (شرط متحقق حسب الإدخال).');
-      } else {
-        parts.push('⚠ نسبة الإلغاء أعلى من 10% — تجنب إلغاء الرحلات قدر الإمكان.');
-      }
-    } else {
-      parts.push('أدخل نسبة الإلغاء الرسمية من تطبيق أوبر/ثرایف.');
-    }
-    qualityHint.textContent = parts.join(' ');
-  }
+/* تقرير */
 
-  // Eligibility
-  if (eligibilityBadge) {
-    let okHours = totalHours >= minHours;
-    let okTrips = totalTrips >= requiredTrips && totalTrips >= minTrips;
-    let okPeak = peakTripsPercent >= minPeakPercent;
-    let okAcc = acceptance != null ? acceptance >= 65 : false;
-    let okCancel = cancel != null ? cancel <= 10 : false;
+function buildReport() {
+  const stats = computeStats();
+  const trips = state.trips || [];
+  const settings = state.settings;
+  const weekStart = new Date(state.weekStartISO);
 
-    if (totalTrips === 0) {
-      eligibilityBadge.textContent = 'في انتظار بيانات رحلات هذا الأسبوع.';
-      eligibilityBadge.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300';
-    } else if (okHours && okTrips && okPeak && okAcc && okCancel) {
-      eligibilityBadge.textContent = '🚀 مؤهل للحافز (حسب البيانات المدخلة تقريبًا).';
-      eligibilityBadge.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500 text-dark';
-    } else {
-      eligibilityBadge.textContent =
-        'بعض الشروط لم تتحقق بعد. راجع التفاصيل في الداشبورد والإعدادات.';
-      eligibilityBadge.className =
-        'text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-200';
-    }
-  }
+  const rangeText = formatDateRangeForWeek(weekStart);
 
-  // Rides table
-  renderRidesTable(rides);
+  const lines = [];
 
-  // If on report page, render report
-  const reportRoot = document.getElementById('reportRoot');
-  if (reportRoot) {
-    renderReport(
-      reportRoot,
-      {
-        totalTrips,
-        totalHours,
-        totalFare,
-        totalCash,
-        totalCard,
-        minHours,
-        minTrips,
-        minPeakPercent,
-        incentivePerTrip,
-        totalIncentive,
-        incomeBoostPercent,
-        peakTripsPercent,
-        peakTimePercent,
-        acceptance,
-        cancel,
-        requiredTrips,
-        peakTripsCount
-      },
-      rides
+  lines.push(`<div><strong>الأسبوع الحالي:</strong> ${rangeText}</div>`);
+  lines.push(`<div class="report-section-title">ملخص عام</div>`);
+  lines.push(`<ul class="report-list">
+    <li>إجمالي الرحلات: ${stats.totalRides}</li>
+    <li>إجمالي ساعات العمل (من مدة الرحلات): ${stats.totalHours.toFixed(2)} ساعة</li>
+    <li>إجمالي الدخل الأساسي من الرحلات: ${stats.totalIncome.toFixed(2)} ر.س</li>
+    <li>إجمالي الحافز (تقديري إذا تحققت الشروط): ${stats.estimatedBonus.toFixed(2)} ر.س</li>
+    <li>نسبة الزيادة الفعلية على الدخل (تقديريًا): ${stats.incomeIncrease.toFixed(1)}%</li>
+  </ul>`);
+
+  lines.push(`<div class="report-section-title">الشروط الرسمية للحافز (حسب إدخالك)</div>`);
+  lines.push(`<ul class="report-list">
+    <li>الحد الأدنى للساعات: ${stats.minHours} ساعة</li>
+    <li>الحد الأدنى لعدد الرحلات (أساسي): ${stats.baseMinRides} رحلة</li>
+    <li>الحد الأدنى لنسبة رحلات الذروة: ${stats.minPeakPercent}%</li>
+    <li>نسبة القبول المطلوبة: ≥ ${settings.acceptThreshold}% (حاليًا: ${settings.acceptRate}%)</li>
+    <li>نسبة الإلغاء القصوى: ≤ ${settings.cancelThreshold}% (حاليًا: ${settings.cancelRate}%)</li>
+  </ul>`);
+
+  lines.push(`<div class="report-section-title">قرار الحافز (تقديري حسب بياناتك)</div>`);
+  const conditionsMet =
+    stats.totalHours >= stats.minHours &&
+    stats.totalRides >= stats.requiredRides &&
+    stats.peakPercent >= stats.minPeakPercent &&
+    settings.acceptRate >= settings.acceptThreshold &&
+    settings.cancelRate <= settings.cancelThreshold &&
+    stats.totalRides > 0;
+
+  if (conditionsMet) {
+    lines.push(
+      `<p>✅ بناءً على بياناتك المسجلة، يبدو أنك حققت جميع الشروط لهذا الأسبوع. القرار النهائي يعود للشركة وفق سياساتها، استخدم هذا التقرير كمرجع شخصي فقط.</p>`
+    );
+  } else {
+    lines.push(
+      `<p>✖ لم تتحقق جميع الشروط بعد وفق بياناتك. استخدم هذا التقرير لمعرفة أين تحتاج إلى تحسين قبل نهاية الأسبوع.</p>`
     );
   }
-}
 
-function renderRidesTable(rides) {
-  const tbody = document.getElementById('ridesTableBody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  rides.forEach((r, idx) => {
-    const tr = document.createElement('tr');
-    tr.className = 'hover:bg-slate-900/60';
-    const mins = (r.durationSec || 0) / 60;
-    tr.innerHTML = `
-      <td class="px-2 py-1 whitespace-nowrap">${idx + 1}</td>
-      <td class="px-2 py-1 whitespace-nowrap">${formatDateTime(r.start)}</td>
-      <td class="px-2 py-1 whitespace-nowrap">${formatDateTime(r.end)}</td>
-      <td class="px-2 py-1">${mins.toFixed(1)}</td>
-      <td class="px-2 py-1">${r.fare != null ? r.fare.toFixed(2) : '-'}</td>
-      <td class="px-2 py-1">${
-        r.cashPart != null
-          ? r.cashPart.toFixed(2)
-          : r.payment === 'cash'
-          ? (r.fare || 0).toFixed(2)
-          : '-'
-      }</td>
-      <td class="px-2 py-1">${
-        r.cardPart != null
-          ? r.cardPart.toFixed(2)
-          : r.payment === 'card'
-          ? (r.fare || 0).toFixed(2)
-          : r.payment === 'cash'
-          ? '0.00'
-          : '-'
-      }</td>
-      <td class="px-2 py-1">${r.isPeak ? '✅' : '—'}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-// ============ Report Rendering ============
-function renderReport(root, summary, rides) {
-  const {
-    totalTrips,
-    totalHours,
-    totalFare,
-    totalCash,
-    totalCard,
-    minHours,
-    minTrips,
-    minPeakPercent,
-    incentivePerTrip,
-    totalIncentive,
-    incomeBoostPercent,
-    peakTripsPercent,
-    peakTimePercent,
-    acceptance,
-    cancel,
-    requiredTrips,
-    peakTripsCount
-  } = summary;
-
-  const okHours = totalHours >= minHours;
-  const okTrips = totalTrips >= requiredTrips && totalTrips >= minTrips;
-  const okPeak = peakTripsPercent >= minPeakPercent;
-  const okAcc = acceptance != null && acceptance >= 65;
-  const okCancel = cancel != null && cancel <= 10;
-  const weekText = getWeekInfoText();
-
-  const fmtBool = (ok) => (ok ? '✅ متحقق' : '❌ غير متحقق');
-  const fmtPercent = (v) => (v != null ? v.toFixed(2) + '%' : '-');
-  const fmtMoney = (v) => (v != null ? v.toFixed(2) + ' ر.س' : '-');
-  const fmtNum = (v) => (v != null ? v.toString() : '-');
-
-  const rowsHtml = rides
-    .map((r, i) => {
-      const mins = (r.durationSec || 0) / 60;
-      const cash =
-        r.cashPart != null ? r.cashPart : r.payment === 'cash' ? (r.fare || 0) : 0;
-      const card =
-        r.cardPart != null
-          ? r.cardPart
-          : r.payment === 'card'
-          ? (r.fare || 0)
-          : r.payment === 'cash'
-          ? 0
-          : null;
-      return `
-      <tr class="border-b border-slate-800">
-        <td class="px-2 py-1">${i + 1}</td>
-        <td class="px-2 py-1 whitespace-nowrap">${formatDateTime(r.start)}</td>
-        <td class="px-2 py-1 whitespace-nowrap">${formatDateTime(r.end)}</td>
-        <td class="px-2 py-1">${mins.toFixed(1)}</td>
-        <td class="px-2 py-1">${r.fare != null ? r.fare.toFixed(2) : '-'}</td>
-        <td class="px-2 py-1">${cash ? cash.toFixed(2) : '-'}</td>
-        <td class="px-2 py-1">${
-          card != null ? card.toFixed(2) : '-'
-        }</td>
-        <td class="px-2 py-1">${r.isPeak ? 'ذروة' : 'عادي'}</td>
-      </tr>
-    `;
-    })
-    .join('');
-
-  root.innerHTML = `
-    <div class="space-y-3">
-      <div class="flex items-center justify-between">
-        <div>
-          <p class="font-semibold text-sm">تقرير أسبوع الحافز - ملخص الأداء</p>
-          <p class="text-[11px] text-slate-400">يُبنى هذا التقرير من البيانات المسجلة في هذا الأسبوع على جهازك.</p>
-          <p class="text-[11px] text-slate-400 mt-1">${weekText}</p>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">إجمالي الرحلات</p>
-          <p class="text-lg font-bold">${fmtNum(totalTrips)}</p>
-        </div>
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">إجمالي ساعات العمل (من مدد الرحلات)</p>
-          <p class="text-lg font-bold">${totalHours.toFixed(2)}</p>
-        </div>
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">إجمالي الدخل الأساسي من الرحلات</p>
-          <p class="text-lg font-bold">${fmtMoney(totalFare)}</p>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">إجمالي الحافز (إذا تحقق)</p>
-          <p class="text-lg font-bold">${fmtMoney(totalIncentive)}</p>
-        </div>
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">نسبة الزيادة الفعلية على الدخل</p>
-          <p class="text-lg font-bold">${
-            incomeBoostPercent != null ? incomeBoostPercent.toFixed(1) + '%' : '-'
-          }</p>
-        </div>
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="text-[11px] text-slate-400">عدد رحلات الذروة</p>
-          <p class="text-lg font-bold">${fmtNum(peakTripsCount)} (${peakTripsPercent.toFixed(
-    1
-  )}%)</p>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="font-semibold text-[12px] text-slate-100 mb-1">الشروط الرسمية للحافز (حسب إدخالك)</p>
-          <ul class="space-y-1 list-disc list-inside">
-            <li>الحد الأدنى للساعات: ${minHours} ساعة → ${fmtBool(okHours)}</li>
-            <li>الحد الأدنى للرحلات + الشرط التصاعدي: مطلوب ${requiredTrips} رحلة (على الأقل ${minTrips}) → ${fmtBool(
-    okTrips
-  )}</li>
-            <li>الحد الأدنى لنسبة رحلات الذروة: ${minPeakPercent}% → ${fmtBool(
-    okPeak
-  )} (حاليًا ${peakTripsPercent.toFixed(1)}%)</li>
-            <li>نسبة القبول الرسمية ≥ 65% → ${fmtBool(okAcc)} (حاليًا ${
-    acceptance != null ? acceptance.toFixed(2) + '%' : 'غير مدخلة'
-  })</li>
-            <li>نسبة الإلغاء الرسمية ≤ 10% → ${fmtBool(okCancel)} (حاليًا ${
-    cancel != null ? cancel.toFixed(2) + '%' : 'غير مدخلة'
-  })</li>
-          </ul>
-        </div>
-        <div class="bg-soft rounded-2xl p-3 space-y-1">
-          <p class="font-semibold text-[12px] text-slate-100 mb-1">قرار الحافز (تقديري حسب البيانات)</p>
-          <p class="text-[12px]">
-            ${
-              okHours && okTrips && okPeak && okAcc && okCancel
-                ? '✅ جميع الشروط المدخلة متحققة تقريبًا، يفترض (منطقيًا) استحقاق الحافز لهذا الأسبوع.'
-                : '❌ لم تتحقق جميع الشروط بعد وفقًا للبيانات المدخلة. استخدم هذا التقرير كمرجع عند مراجعة الشركة.'
-            }
-          </p>
-          <p class="text-[11px] text-slate-400 mt-2">
-            ملاحظة: هذا التقرير يعتمد بالكامل على البيانات التي أدخلتها أنت في المتتبع، ولا يرتبط مباشرة بأنظمة أوبر أو ثرايف.
-          </p>
-        </div>
-      </div>
-
-      <div class="bg-soft rounded-2xl p-3 space-y-2 text-xs mt-3">
-        <p class="font-semibold text-[12px] text-slate-100 mb-1">تفاصيل الرحلات</p>
-        <div class="overflow-x-auto border border-slate-800 rounded-2xl">
-          <table class="min-w-full text-[11px]">
-            <thead class="bg-slate-900 text-slate-300">
-              <tr>
-                <th class="px-2 py-2 text-right">#</th>
-                <th class="px-2 py-2 text-right">بداية</th>
-                <th class="px-2 py-2 text-right">نهاية</th>
-                <th class="px-2 py-2 text-right">مدة (دقائق)</th>
-                <th class="px-2 py-2 text-right">قيمة الرحلة</th>
-                <th class="px-2 py-2 text-right">كاش</th>
-                <th class="px-2 py-2 text-right">بطاقة</th>
-                <th class="px-2 py-2 text-right">نوع الفترة</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-800 bg-slate-950/40">
-              ${rowsHtml}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============ Views (Dashboard / Rides / Settings / Report) ============
-let currentView = 'dashboard';
-
-function setView(view) {
-  currentView = view;
-  document.querySelectorAll('[data-view]').forEach((el) => {
-    if (el.dataset.view === view) {
-      el.classList.remove('hidden');
-    } else {
-      el.classList.add('hidden');
-    }
-  });
-
-  document.querySelectorAll('.nav-btn').forEach((btn) => {
-    const v = btn.dataset.navView;
-    if (v === view) {
-      btn.classList.add('bg-soft', 'text-slate-100');
-      btn.classList.remove('bg-transparent');
-    } else {
-      btn.classList.remove('bg-soft', 'text-slate-100');
-      btn.classList.add('bg-transparent');
-    }
-  });
-
-  if (view === 'report') {
-    window.open('report.html', '_blank');
-    // بعد فتح التقرير، نرجع للداشبورد
-    currentView = 'dashboard';
-    document.querySelectorAll('[data-view]').forEach((el) => {
-      el.classList.toggle('hidden', el.dataset.view !== 'dashboard');
-    });
-  }
-}
-
-// ============ UI Binding ============
-let currentRide = null;
-let deferredPrompt = null;
-
-function bindUI() {
-  const minHoursInput = document.getElementById('minHoursInput');
-  const minTripsInput = document.getElementById('minTripsInput');
-  const minPeakRatioInput = document.getElementById('minPeakRatioInput');
-  const incentivePerTripInput = document.getElementById('incentivePerTripInput');
-  const acceptanceInput = document.getElementById('acceptanceInput');
-  const cancelInput = document.getElementById('cancelInput');
-  const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-  const newWeekBtn = document.getElementById('newWeekBtn');
-
-  const startRideBtn = document.getElementById('startRideBtn');
-  const endRideBtn = document.getElementById('endRideBtn');
-  const currentRideHint = document.getElementById('currentRideHint');
-  const exportBtn = document.getElementById('exportBtn');
-  const openReportBtn = document.getElementById('openReportBtn');
-
-  const endRideModal = document.getElementById('endRideModal');
-  const fareInput = document.getElementById('fareInput');
-  const cashPartInput = document.getElementById('cashPartInput');
-  const mixedCashContainer = document.getElementById('mixedCashContainer');
-  const payButtons = document.querySelectorAll('.payBtn');
-  const cancelEndRideBtn = document.getElementById('cancelEndRideBtn');
-  const confirmEndRideBtn = document.getElementById('confirmEndRideBtn');
-
-  const menuToggleBtn = document.getElementById('menuToggleBtn');
-  const closeMenuBtn = document.getElementById('closeMenuBtn');
-  const sideMenu = document.getElementById('sideMenu');
-  const navButtons = document.querySelectorAll('.nav-btn');
-
-  // Fill settings
-  if (minHoursInput) minHoursInput.value = state.rules.minHours;
-  if (minTripsInput) minTripsInput.value = state.rules.minTrips;
-  if (minPeakRatioInput) minPeakRatioInput.value = state.rules.minPeakTripsPercent;
-  if (incentivePerTripInput) incentivePerTripInput.value = state.rules.incentivePerTrip;
-  if (acceptanceInput && state.stats.acceptance != null)
-    acceptanceInput.value = state.stats.acceptance;
-  if (cancelInput && state.stats.cancel != null) cancelInput.value = state.stats.cancel;
-
-  // Save settings
-  if (saveSettingsBtn) {
-    saveSettingsBtn.addEventListener('click', () => {
-      state.rules.minHours = minHoursInput.value ? Number(minHoursInput.value) : 0;
-      state.rules.minTrips = minTripsInput.value ? Number(minTripsInput.value) : 0;
-      state.rules.minPeakTripsPercent = minPeakRatioInput.value
-        ? Number(minPeakRatioInput.value)
-        : 0;
-      state.rules.incentivePerTrip = incentivePerTripInput.value
-        ? Number(incentivePerTripInput.value)
-        : 0;
-      state.stats.acceptance = acceptanceInput.value ? Number(acceptanceInput.value) : null;
-      state.stats.cancel = cancelInput.value ? Number(cancelInput.value) : null;
-      saveState();
-      recalcDashboard();
-    });
-  }
-
-  // New week: clear all
-  if (newWeekBtn) {
-    newWeekBtn.addEventListener('click', () => {
-      if (
-        !confirm(
-          'سيتم مسح جميع الرحلات المسجلة لهذا الأسبوع من هذا الجهاز فقط. هل أنت متأكد؟'
-        )
-      )
-        return;
-      state.rides = [];
-      currentRide = null;
-      saveState();
-      recalcDashboard();
-      if (currentRideHint) currentRideHint.textContent = 'لا توجد رحلة مفتوحة حاليًا.';
-    });
-  }
-
-  // التحكم في القائمة المنزلقة
-  if (menuToggleBtn && sideMenu) {
-    menuToggleBtn.addEventListener('click', () => {
-      sideMenu.classList.remove('translate-x-full');
-    });
-  }
-  if (closeMenuBtn && sideMenu) {
-    closeMenuBtn.addEventListener('click', () => {
-      sideMenu.classList.add('translate-x-full');
-    });
-  }
-
-  navButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const targetView = btn.dataset.navView;
-      if (!targetView) return;
-      setView(targetView);
-      if (sideMenu) sideMenu.classList.add('translate-x-full');
-    });
-  });
-
-  // Current ride UI
-  function refreshCurrentRideUI() {
-    if (!startRideBtn || !endRideBtn || !currentRideHint) return;
-    if (currentRide) {
-      startRideBtn.disabled = true;
-      endRideBtn.disabled = false;
-      currentRideHint.textContent = 'رحلة مفتوحة منذ: ' + formatDateTime(currentRide.start);
-    } else {
-      startRideBtn.disabled = false;
-      endRideBtn.disabled = true;
-      currentRideHint.textContent = 'لا توجد رحلة مفتوحة حاليًا.';
-    }
-  }
-
-  // Start ride
-  if (startRideBtn) {
-    startRideBtn.addEventListener('click', () => {
-      if (currentRide) return;
-      const now = new Date().toISOString();
-      currentRide = { start: now };
-      refreshCurrentRideUI();
-    });
-  }
-
-  // End ride -> open modal
-  if (endRideBtn) {
-    endRideBtn.addEventListener('click', () => {
-      if (!currentRide) return;
-      if (!endRideModal) return;
-      endRideModal.classList.remove('pointer-events-none');
-      endRideModal.classList.remove('opacity-0');
-      endRideModal.dataset.selectedPay = '';
-      if (fareInput) fareInput.value = '';
-      if (cashPartInput) cashPartInput.value = '';
-      if (mixedCashContainer) mixedCashContainer.classList.add('hidden');
-      payButtons.forEach((btn) => {
-        btn.classList.remove('bg-emerald-500', 'text-dark');
-        btn.classList.add('bg-soft');
-      });
-    });
-  }
-
-  // Payment buttons
-  payButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      payButtons.forEach((b) => {
-        b.classList.remove('bg-emerald-500', 'text-dark');
-        b.classList.add('bg-soft');
-      });
-      btn.classList.add('bg-emerald-500', 'text-dark');
-      btn.classList.remove('bg-soft');
-      if (endRideModal) endRideModal.dataset.selectedPay = btn.dataset.pay;
-      if (mixedCashContainer) {
-        if (btn.dataset.pay === 'mixed') mixedCashContainer.classList.remove('hidden');
-        else mixedCashContainer.classList.add('hidden');
-      }
-    });
-  });
-
-  // Cancel end ride
-  if (cancelEndRideBtn) {
-    cancelEndRideBtn.addEventListener('click', () => {
-      if (!endRideModal) return;
-      endRideModal.classList.add('opacity-0');
-      endRideModal.classList.add('pointer-events-none');
-    });
-  }
-
-  // Confirm end ride (منطق الدفع المختلط مع التركيز على الكاش)
-  if (confirmEndRideBtn) {
-    confirmEndRideBtn.addEventListener('click', () => {
-      if (!currentRide) return;
-      const endTime = new Date().toISOString();
-      const startTime = currentRide.start;
-      const durationSec = Math.max(
-        0,
-        Math.round((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000)
+  if (trips.length > 0) {
+    lines.push(`<div class="report-section-title">تفاصيل الرحلات</div>`);
+    lines.push("<ul class='report-list'>");
+    const sorted = [...trips].sort((a, b) => new Date(a.start) - new Date(b.start));
+    sorted.forEach((t, idx) => {
+      lines.push(
+        `<li>#${idx + 1} – من ${formatDateTimeShort(t.start)} إلى ${formatDateTimeShort(
+          t.end
+        )} – مدة ${(t.durationSeconds / 60).toFixed(1)} د – قيمة ${(t.amount || 0).toFixed(
+          2
+        )} ر.س – دفع: ${
+          t.paymentType === "cash" ? "كاش" : t.paymentType === "card" ? "بطاقة" : "مختلط"
+        } – ذروة: ${t.isPeak ? "نعم" : "لا"}</li>`
       );
-
-      const rawFareVal = fareInput && fareInput.value ? Number(fareInput.value) : null;
-      const payMethod = endRideModal ? endRideModal.dataset.selectedPay || null : null;
-      let fareVal = rawFareVal;
-      let cashPart = null;
-      let cardPart = null;
-
-      if (!payMethod) {
-        alert('الرجاء اختيار طريقة الدفع.');
-        return;
-      }
-
-      if (payMethod === 'cash' || payMethod === 'card') {
-        if (!fareVal || fareVal <= 0) {
-          alert('الرجاء إدخال قيمة الرحلة لهذه الطريقة (كاش أو بطاقة).');
-          return;
-        }
-        if (payMethod === 'cash') {
-          cashPart = fareVal;
-          cardPart = 0;
-        } else {
-          cashPart = 0;
-          cardPart = fareVal;
-        }
-      } else if (payMethod === 'mixed') {
-        const cashVal =
-          cashPartInput && cashPartInput.value ? Number(cashPartInput.value) : 0;
-        if (!cashVal || cashVal <= 0) {
-          alert('في حالة الدفع المختلط، الرجاء إدخال المبلغ الكاش المستلم من العميل.');
-          return;
-        }
-        cashPart = cashVal;
-
-        // قيمة الرحلة الكاملة اختيارية:
-        // إذا لم تُدخل، يعتبر الدخل الأساسي لهذه الرحلة = الكاش فقط.
-        if (!fareVal || fareVal <= 0) {
-          fareVal = cashVal;
-          cardPart = 0;
-        } else {
-          if (cashVal > fareVal) {
-            alert('المبلغ الكاش لا يمكن أن يكون أكبر من قيمة الرحلة الكاملة.');
-            return;
-          }
-          cardPart = fareVal - cashVal;
-        }
-      }
-
-      const ride = {
-        start: startTime,
-        end: endTime,
-        durationSec,
-        fare: fareVal,
-        payment: payMethod,
-        cashPart,
-        cardPart,
-        isPeak: isPeak(startTime)
-      };
-
-      state.rides.push(ride);
-      currentRide = null;
-      saveState();
-      if (endRideModal) {
-        endRideModal.classList.add('opacity-0');
-        endRideModal.classList.add('pointer-events-none');
-      }
-      refreshCurrentRideUI();
-      recalcDashboard();
     });
+    lines.push("</ul>");
   }
 
-  // Export
-  if (exportBtn) {
-    exportBtn.addEventListener('click', () => {
-      const dataStr =
-        'data:text/json;charset=utf-8,' +
-        encodeURIComponent(JSON.stringify(state, null, 2));
-      const a = document.createElement('a');
-      a.href = dataStr;
-      a.download = 'thrivve-tracker-week.json';
-      a.click();
-    });
-  }
-
-  // Open report
-  if (openReportBtn) {
-    openReportBtn.addEventListener('click', () => {
-      window.open('report.html', '_blank');
-    });
-  }
-
-  refreshCurrentRideUI();
-  setView('dashboard');
+  reportContentEl.innerHTML = lines.join("");
 }
 
-// ============ PWA Install ============
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  const installBtn = document.getElementById('installBtn');
-  if (installBtn) installBtn.classList.remove('hidden');
-});
+/* تشغيل/إيقاف رحلة */
 
-function setupInstallButton() {
-  const installBtn = document.getElementById('installBtn');
-  if (!installBtn) return;
-  installBtn.addEventListener('click', async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    await deferredPrompt.userChoice;
-    deferredPrompt = null;
-    installBtn.classList.add('hidden');
+function startTrip() {
+  if (currentTripStart) return;
+  currentTripStart = new Date();
+  startTripBtn.disabled = true;
+  startTripBtn.classList.add("ghost-btn");
+  startTripBtn.classList.remove("primary-btn");
+  endTripBtn.disabled = false;
+  currentTripLabel.textContent = `رحلة جارية منذ ${formatTimeHM(currentTripStart)} (تذكير: لا تنس إنهاءها بعد انتهاء الرحلة).`;
+  showToast("تم بدء الرحلة. عند الانتهاء اضغط على زر إنهاء الرحلة.");
+}
+
+function openEndTripModal() {
+  if (!currentTripStart) {
+    showToast("لا توجد رحلة فعّالة حاليًا.");
+    return;
+  }
+  endTripModal.classList.remove("hidden");
+  fareInput.value = "";
+  cashPartInput.value = "";
+  selectPayChip("cash");
+  selectPeakChip("auto");
+  overridePeakCheckbox.checked = false;
+
+  // تركيز على حقل القيمة لفتح لوحة الأرقام
+  setTimeout(() => {
+    fareInput.focus();
+  }, 50);
+}
+
+function closeEndTripModal() {
+  endTripModal.classList.add("hidden");
+}
+
+function selectPayChip(type) {
+  payChips.forEach((c) => {
+    c.classList.toggle("chip-selected", c.dataset.pay === type);
   });
 }
 
-// ============ Bootstrap ============
-window.addEventListener('load', () => {
-  loadState();
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(console.error);
+function getSelectedPayType() {
+  let type = "cash";
+  payChips.forEach((c) => {
+    if (c.classList.contains("chip-selected")) type = c.dataset.pay;
+  });
+  return type;
+}
+
+function selectPeakChip(mode) {
+  peakOverrideMode = mode;
+  peakChips.forEach((c) => {
+    c.classList.toggle("chip-selected", c.dataset.peak === mode);
+  });
+}
+
+function saveTripFromModal() {
+  if (!currentTripStart) {
+    showToast("لا توجد رحلة جارية.");
+    closeEndTripModal();
+    return;
   }
-  bindUI();
-  setupInstallButton();
-  recalcDashboard();
+  const end = new Date();
+  const durationSeconds = Math.max(60, Math.floor((end - currentTripStart) / 1000));
+
+  const amount = parseFloat(fareInput.value || "0") || 0;
+  const cashPart = parseFloat(cashPartInput.value || "0") || 0;
+  const paymentType = getSelectedPayType();
+
+  if (amount <= 0 && paymentType !== "cash") {
+    showToast("يفضل إدخال قيمة الرحلة الإجمالية لأجل دقة الحساب.");
+  }
+
+  let isPeak = isWithinPeakAutomatic(currentTripStart);
+  if (overridePeakCheckbox.checked) {
+    if (peakOverrideMode === "force-peak") isPeak = true;
+    if (peakOverrideMode === "force-off") isPeak = false;
+  }
+
+  const trip = {
+    id: Date.now(),
+    start: currentTripStart.toISOString(),
+    end: end.toISOString(),
+    durationSeconds,
+    amount,
+    paymentType,
+    cashPart: paymentType === "mixed" ? cashPart : paymentType === "cash" ? amount : 0,
+    isPeak
+  };
+
+  state.trips.push(trip);
+  currentTripStart = null;
+  startTripBtn.disabled = false;
+  startTripBtn.classList.remove("ghost-btn");
+  startTripBtn.classList.add("primary-btn");
+  endTripBtn.disabled = true;
+  currentTripLabel.textContent = "";
+
+  closeEndTripModal();
+  updateDashboard();
+  showToast("تم حفظ الرحلة بنجاح.");
+}
+
+/* JSON تصدير */
+
+function exportWeekJSON() {
+  const dataStr = JSON.stringify(state, null, 2);
+  const blob = new Blob([dataStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "thrivve-week.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* تهيئة */
+
+function initState() {
+  const today = new Date();
+  const monday = getMonday(today);
+
+  const loaded = loadState();
+  if (!loaded) {
+    state = createEmptyWeek(monday);
+    saveState(state);
+    return;
+  }
+
+  const savedWeekStart = new Date(loaded.weekStartISO);
+  const mondayISO = monday.toISOString().slice(0, 10);
+  const savedISO = savedWeekStart.toISOString().slice(0, 10);
+
+  if (mondayISO !== savedISO) {
+    // أسبوع جديد
+    state = createEmptyWeek(monday);
+    state.ui.hasShownWeekResetToast = true;
+    showToast("تم بدء أسبوع جديد تلقائيًا حسب تاريخ جهازك.");
+    saveState(state);
+  } else {
+    state = loaded;
+  }
+}
+
+/* إعداد الأحداث */
+
+function setupListeners() {
+  navItems.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.target;
+      changeScreen(target);
+    });
+  });
+
+  newWeekBtn.addEventListener("click", () => {
+    const monday = getMonday(new Date());
+    state = createEmptyWeek(monday);
+    saveState(state);
+    updateDashboard();
+    showToast("بدأت أسبوع حافز جديد. تم تصفير بيانات الرحلات.");
+  });
+
+  startTripBtn.addEventListener("click", startTrip);
+  endTripBtn.addEventListener("click", openEndTripModal);
+  cancelTripBtn.addEventListener("click", () => {
+    closeEndTripModal();
+  });
+  saveTripBtn.addEventListener("click", saveTripFromModal);
+
+  payChips.forEach((chip) => {
+    chip.addEventListener("click", () => selectPayChip(chip.dataset.pay));
+  });
+
+  peakChips.forEach((chip) => {
+    chip.addEventListener("click", () => selectPeakChip(chip.dataset.peak));
+  });
+
+  showReportBtn.addEventListener("click", () => {
+    changeScreen("report");
+  });
+
+  exportJsonBtn.addEventListener("click", exportWeekJSON);
+
+  settingsForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const s = state.settings;
+    s.minHours = parseFloat(minHoursInput.value || "0") || 0;
+    s.baseMinRides = parseInt(baseRidesInput.value || "0", 10) || 0;
+    s.minPeakPercent = parseFloat(minPeakInput.value || "0") || 0;
+    s.bonusPerRide = parseFloat(bonusPerRideInput.value || "0") || 0;
+    s.acceptRate = parseFloat(acceptRateInput.value || "0") || 0;
+    s.cancelRate = parseFloat(cancelRateInput.value || "0") || 0;
+    saveState(state);
+    updateDashboard();
+    showToast("تم حفظ الإعدادات وتحديث الحسابات.");
+  });
+
+  resetWeekBtn.addEventListener("click", () => {
+    if (!confirm("سيتم حذف جميع رحلات هذا الأسبوع نهائيًا وبدء أسبوع جديد. هل أنت متأكد؟")) return;
+    const monday = getMonday(new Date());
+    state = createEmptyWeek(monday);
+    saveState(state);
+    updateDashboard();
+    showToast("تم تصفير بيانات هذا الأسبوع.");
+  });
+
+  printReportBtn.addEventListener("click", () => {
+    window.print();
+  });
+
+  infoTriggers.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.openInfo;
+      if (key === "bonus-info") {
+        infoModalTitle.textContent = "طريقة حساب الحافز";
+        infoModalText.textContent =
+          "الحافز التقديري يعتمد على عدد الرحلات المسجلة وقيمة الحافز لكل رحلة كما أدخلتها في الإعدادات. القرار النهائي دائمًا يكون من الشركة حسب بياناتها الداخلية.";
+      }
+      infoModal.classList.remove("hidden");
+    });
+  });
+
+  infoCloseBtn.addEventListener("click", () => {
+    infoModal.classList.add("hidden");
+  });
+  infoModal.addEventListener("click", (e) => {
+    if (e.target === infoModal) infoModal.classList.add("hidden");
+  });
+}
+
+/* تسجيل Service Worker من أجل التثبيت كتطبيق */
+
+function registerServiceWorker() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker
+      .register("./sw.js")
+      .catch(() => {
+        // تجاهل الأخطاء
+      });
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  initState();
+  setupListeners();
+  updateDashboard();
+  changeScreen(state.ui.lastActiveScreen || "home");
+  registerServiceWorker();
 });
