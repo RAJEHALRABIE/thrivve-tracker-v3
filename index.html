@@ -297,6 +297,32 @@
               القبول والإلغاء يمكنك تحديثها متى شئت حسب ما يظهر في تطبيق أوبر.
             </p>
           </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>نسخ / استعادة بيانات المتابع</h2>
+            </div>
+            <p class="card-note">
+              استخدم هذه الأدوات لنقل بياناتك بين النسخة القديمة والجديدة للتطبيق (مثلاً بين روابط مختلفة على Netlify).
+            </p>
+            <div class="form-group">
+              <button id="export-state-btn" type="button" class="btn btn-secondary full">
+                تصدير بيانات المتابع (نسخ كنص)
+              </button>
+            </div>
+            <div class="form-group">
+              <label for="state-json-area">نص البيانات (للاستيراد أو الاحتفاظ بنسخة احتياطية)</label>
+              <textarea id="state-json-area" rows="5" style="width: 100%; border-radius: 14px; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: #e5e7eb; font-size: 12px; padding: 8px;"></textarea>
+            </div>
+            <div class="form-group">
+              <button id="import-state-btn" type="button" class="btn btn-primary full">
+                استيراد البيانات من النص أعلاه
+              </button>
+            </div>
+            <p class="card-note">
+              لن يتم مسح بياناتك تلقائيًا، هذه الأدوات تعمل فقط عند استخدامها يدويًا. تأكد من لصق النص الكامل كما هو بدون تعديل.
+            </p>
+          </section>
         </section>
 
         <!-- شاشة التقرير -->

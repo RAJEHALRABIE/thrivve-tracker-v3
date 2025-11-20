@@ -110,6 +110,10 @@ const previewIncome = document.getElementById("preview-income");
 const previewBonus = document.getElementById("preview-bonus");
 const openReportBtn = document.getElementById("open-report-btn");
 
+const exportStateBtn = document.getElementById("export-state-btn");
+const importStateBtn = document.getElementById("import-state-btn");
+const stateJsonArea = document.getElementById("state-json-area");
+
 // المودال العام
 const modalBackdrop = document.getElementById("modal-backdrop");
 const modalIcon = document.getElementById("modal-icon");
@@ -620,6 +624,52 @@ statusInfoBtn.addEventListener("click", () => {
 
   openInfoModal("تفاصيل حالة الحافز الحالية", msg.replace(/\n/g, "\n"));
 });
+
+
+// تصدير/استيراد بيانات المتابع (لنقل البيانات بين نطاقين مختلفين)
+if (exportStateBtn && stateJsonArea) {
+  exportStateBtn.addEventListener("click", () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        openInfoModal("لا توجد بيانات", "لم يتم العثور على بيانات محفوظة في هذا المتصفح بعد.");
+        return;
+      }
+      stateJsonArea.value = raw;
+      stateJsonArea.focus();
+      stateJsonArea.select?.();
+      openInfoModal("تم تجهيز البيانات", "تم نسخ بيانات المتابع في المربع. انسخ النص بالكامل ثم الصقه في النسخة الجديدة من التطبيق ضمن خانة الاستيراد.");
+    } catch (e) {
+      openInfoModal("خطأ في التصدير", "حدث خطأ غير متوقع أثناء محاولة قراءة البيانات.", "⚠️");
+    }
+  });
+}
+
+if (importStateBtn && stateJsonArea) {
+  importStateBtn.addEventListener("click", () => {
+    try {
+      const raw = stateJsonArea.value.trim();
+      if (!raw) {
+        openInfoModal("لا يوجد نص", "الرجاء لصق نص البيانات في المربع قبل الاستيراد.");
+        return;
+      }
+      const parsed = JSON.parse(raw);
+
+      if (!parsed || typeof parsed !== "object" || !parsed.weekStart || !parsed.weekEnd) {
+        openInfoModal("بيانات غير صالحة", "النص لا يبدو كبيانات تطبيق متابع الحافز. تأكد من نسخه بالكامل من النسخة القديمة.", "⚠️");
+        return;
+      }
+
+      state = parsed;
+      saveState(state);
+      migratePeakFlagsOnce?.();
+      updateUI();
+      openInfoModal("تم الاستيراد بنجاح", "تم استيراد البيانات وتحديث الحالة. يمكنك الآن استخدام النسخة الجديدة من التطبيق مع نفس بياناتك.", "✅");
+    } catch (e) {
+      openInfoModal("تعذر قراءة البيانات", "حدث خطأ أثناء قراءة أو تحليل النص. تأكد من لصق النص بالكامل كما هو.", "⚠️");
+    }
+  });
+}
 
 // زر أسبوع جديد
 newWeekBtn.addEventListener("click", () => {
